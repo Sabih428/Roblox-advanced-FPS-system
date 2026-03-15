@@ -1,0 +1,221 @@
+--[[Scripts,animations and rigging by handball_sabeeh
+3D models and SFX are imported
+----------------------------------------------------
+There is a client script but....your rules say you want one script only and this is the main one
+of course the first time i made it it was like a framework but i made it all in a one script
+]]
+local WeaponsInfo = {
+	["AK47"] = {
+		Name = "AK47",
+		Type = "Auto",
+		Animations = {
+			Idle = 74934058371515,
+			Reloading = 77747337503328,
+			ViewModelIdle = 135593073807338,
+			ViewModelReloading = 134165784696995,
+		},
+		Settings = {
+			Damage = 10,
+			BulletRange = 2000,
+			FireRate = 0.15,
+			ReloadDuration = 2,
+			MaxAmmo = 30,
+		}
+	}
+}
+local WeaponsSystem = {}
+local WeaponsInfoForPlayer = {}--this will contain the player's current weapon, and info for each weapon like how many ammo in this weapon, if it is reloading and the last shot time for fire rate
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local Remotes = ReplicatedStorage:WaitForChild("WeaponsSystem"):WaitForChild("Remotes")
+local UpdateUIRemote = Remotes:WaitForChild("UpdateUI")
+local PlayAnimationRemote = Remotes:WaitForChild("PlayAnimation")
+local StopAnimationRemote = Remotes:WaitForChild("StopAnimation")
+local ViewModelRemote = Remotes:WaitForChild("ViewModelRemote")
+local GetShootInfoRemote = Remotes:WaitForChild("GetShootInfo")
+local ReloadingRemote = Remotes:WaitForChild("Reloading")
+local Motor6Ds = ReplicatedStorage:WaitForChild("WeaponsSystem"):WaitForChild("Motor6Ds")--this is a folder in WeaponsSystem in replicated storage. it contains a motor6D for each weapon in the game to handle the weapon's offset from the righ hand
+local ServerStorage = game:GetService("ServerStorage")
+function WeaponsSystem.AddPlayer(Player:Player)
+	WeaponsInfoForPlayer[Player] = {}
+	local TimeNow = os.clock()
+	for _,Weapon in pairs(WeaponsInfo) do--setting up last shots for each weapon
+		local MaxAmmo = Weapon.Settings.MaxAmmo
+		WeaponsInfoForPlayer[Player][Weapon.Name] = {}
+		WeaponsInfoForPlayer[Player][Weapon.Name]["Ammo"] = MaxAmmo
+		WeaponsInfoForPlayer[Player][Weapon.Name]["LastShot"] = TimeNow
+		WeaponsInfoForPlayer[Player][Weapon.Name]["Reloading"] = false
+	end
+	WeaponsInfoForPlayer[Player]["CurrentWeapon"] = nil
+end
+function WeaponsSystem.RemovePlayer(Player:Player)
+	WeaponsInfoForPlayer[Player] = nil
+end
+function WeaponsSystem.CreateMotor6D(Character:Model,Weapon:Tool)--i think this function is clear enough no explaining needed
+	if Character:FindFirstChild("RightHand") then
+		local RightHand = Character:FindFirstChild("RightHand")
+		local Motor6DToCopy = Motor6Ds:WaitForChild(Weapon.Name)
+		local Motor6DClone = Motor6DToCopy:Clone()
+		Motor6DClone.Name = "Handle"
+		if RightHand:FindFirstChild("Handle") then
+			RightHand:FindFirstChild("Handle"):Destroy()
+		end
+		if RightHand:FindFirstChild("RightGrip") then
+			RightHand:FindFirstChild("RightGrip"):Destroy()
+		end
+		Motor6DClone.Parent = RightHand
+		local WeaponHandle = Weapon:WaitForChild("Handle")
+		Motor6DClone.Part0 = RightHand
+		Motor6DClone.Part1 = WeaponHandle
+	end
+end
+function WeaponsSystem.Shoot(Character:Model,Weapon:Tool)
+	if not Character:FindFirstChild("HumanoidRootPart") 
+		or Character:FindFirstChild("Humanoid").Health == 0 
+		or not Players:GetPlayerFromCharacter(Character) 
+		or Weapon.Parent ~= Character then return nil end--Safety check 1
+	local Player = Players:GetPlayerFromCharacter(Character)--for remotes
+	local WeaponInfo = WeaponsInfo[Weapon.Name]
+	local TimeNow = os.clock()--new shot time
+	if TimeNow - WeaponsInfoForPlayer[Player][Weapon.Name]["LastShot"] <= WeaponInfo.Settings.FireRate then return nil end --fire rate
+	WeaponsInfoForPlayer[Player][Weapon.Name]["LastShot"] = TimeNow
+	local AmmoWithPlayer = WeaponsInfoForPlayer[Player][Weapon.Name]["Ammo"]
+	if AmmoWithPlayer > 0 then
+		local ShootingSFX = Weapon:WaitForChild("Main"):WaitForChild("Shooting")
+		ShootingSFX:Play()
+		WeaponsInfoForPlayer[Player][Weapon.Name]["Ammo"] -= 1
+		UpdateUIRemote:FireClient(Player,true,false,WeaponsInfoForPlayer[Player][Weapon.Name]["Ammo"],WeaponsInfo[Weapon.Name]["Settings"]["MaxAmmo"])--First arguement represents the visibility, the second one represents "IsReloading", the third one repesents the amm and the last one represents the max ammo
+		local RaycastParamsForShooting = RaycastParams.new()
+		RaycastParamsForShooting.FilterType = Enum.RaycastFilterType.Exclude
+		RaycastParamsForShooting.FilterDescendantsInstances = {Character,Weapon}--the ray now can't damage the player himself
+		local CameraPosition, CameraLookVector = GetShootInfoRemote:InvokeClient(Player)
+		if typeof(CameraPosition) ~= "Vector3"
+			or typeof(CameraLookVector) ~= "Vector3" 
+			or CameraLookVector.Magnitude > 1.01 
+			or CameraLookVector.Magnitude < 0.99  -- because a look vector should be a unit, meaning that its magnitude shall be nearly 1
+			or not Character:FindFirstChild("HumanoidRootPart") 
+			or (CameraPosition - Character:FindFirstChild("HumanoidRootPart").Position).Magnitude > 3 then return nil end--Safety check 2
+		local BulletRange = WeaponsInfo[Weapon.Name]["Settings"]["BulletRange"]-- how far can the bullet go
+		local Damage = WeaponsInfo[Weapon.Name]["Settings"]["Damage"]
+		local RayResult = workspace:Raycast(CameraPosition,CameraLookVector*BulletRange,RaycastParamsForShooting)
+		if RayResult then
+			if RayResult.Instance.Parent:FindFirstChild("Humanoid") then --So it doesn't work when the hit is an accessory
+				local HumanoidToDamage = RayResult.Instance.Parent:FindFirstChild("Humanoid")
+				if RayResult.Instance.Name == "Head" then
+					HumanoidToDamage:TakeDamage(Damage*2)
+				else
+					HumanoidToDamage:TakeDamage(Damage)
+				end
+			end
+		end
+	else
+		WeaponsSystem.Reload(Player,Weapon)
+	end
+end
+function WeaponsSystem.Reload(Player:Player,Weapon:Tool)
+	if WeaponsInfoForPlayer[Player][Weapon.Name]["Reloading"] == true --if already reloading that weapon, nothing will happen.
+		or WeaponsInfoForPlayer[Player][Weapon.Name]["Ammo"] == WeaponsInfo[Weapon.Name]["Settings"]["MaxAmmo"] --if the weapon is full,nothing will happen.
+	then return nil end
+	local ReloadSFX = Weapon:WaitForChild("Main"):WaitForChild("Reloading")
+	ReloadSFX:Play()
+	WeaponsInfoForPlayer[Player][Weapon.Name]["Reloading"] = true
+	local ReloadDuration = WeaponsInfo[Weapon.Name]["Settings"]["ReloadDuration"]
+	PlayAnimationRemote:FireClient(Player,"Normal",WeaponsInfo[Weapon.Name]["Animations"]["Reloading"])--playing the reload anim on the character
+	PlayAnimationRemote:FireClient(Player,"ViewModel",WeaponsInfo[Weapon.Name]["Animations"]["ViewModelReloading"])--playing the reload anim on the Viewmodel
+	UpdateUIRemote:FireClient(Player,true,true)--explained before
+	task.delay(ReloadDuration,function()
+		if not Player
+			or not Player.Character
+			or Weapon.Parent ~= Player.Character then return nil end --to make sure hes still holding the weapon
+		WeaponsInfoForPlayer[Player][Weapon.Name]["Ammo"] = WeaponsInfo[Weapon.Name]["Settings"]["MaxAmmo"]
+		UpdateUIRemote:FireClient(Player,true,false,WeaponsInfoForPlayer[Player][Weapon.Name]["Ammo"],WeaponsInfo[Weapon.Name]["Settings"]["MaxAmmo"])
+		WeaponsInfoForPlayer[Player][Weapon.Name]["Reloading"] = false
+	end)
+end
+function WeaponsSystem.GetCharacterAndPlayer(Weapon:Tool)
+	local Character = Weapon.Parent
+	local Player = Players:GetPlayerFromCharacter(Character)
+	return Player,Character
+end
+function WeaponsSystem.DealWithClient(Player:Player,Weapon:Tool)
+	ViewModelRemote:FireClient(Player,true,Weapon.Name.."Viewmodel")
+	PlayAnimationRemote:FireClient(Player,"Normal",WeaponsInfo[Weapon.Name]["Animations"]["Idle"])
+	PlayAnimationRemote:FireClient(Player,"ViewModel",WeaponsInfo[Weapon.Name]["Animations"]["ViewModelIdle"])
+	UpdateUIRemote:FireClient(Player,true,false,WeaponsInfoForPlayer[Player][Weapon.Name]["Ammo"],WeaponsInfo[Weapon.Name]["Settings"]["MaxAmmo"])
+	Player.CameraMode = Enum.CameraMode.LockFirstPerson
+	WeaponsInfoForPlayer[Player]["CurrentWeapon"] = Weapon
+end
+function WeaponsSystem.Weaponize(Weapon:Tool)
+	local Player, Character
+	Weapon.Equipped:Connect(function()
+		Player, Character = WeaponsSystem.GetCharacterAndPlayer(Weapon)
+		if not Character or not Player then return nil end
+		WeaponsSystem.CreateMotor6D(Character,Weapon)
+		if Player then
+			WeaponsSystem.DealWithClient(Player,Weapon)
+		end
+	end)
+	local WeaponType = WeaponsInfo[Weapon.Name]["Type"] --decides how the gun shooting behaviour will be
+	local IsShooting = false
+	Weapon.Activated:Connect(function()
+		if not Character or not Player then return nil end
+		if WeaponType == "Auto" then
+			IsShooting = true
+		else
+			WeaponsSystem.Shoot(Character,Weapon)
+		end
+	end)
+	Weapon.Deactivated:Connect(function()
+		IsShooting = false
+	end)
+	if WeaponType == "Auto" then
+		task.spawn(function()
+			while Weapon.Parent do
+				task.wait()
+				if Player and Character and IsShooting then
+					WeaponsSystem.Shoot(Character,Weapon)
+				end
+			end
+		end)
+	end
+	Weapon.Unequipped:Connect(function()--cleaning everything up,no need for explaining
+		IsShooting = false
+		UpdateUIRemote:FireClient(Player, false)
+		ViewModelRemote:FireClient(Player,false,Weapon.Name.."ViewModel")
+		StopAnimationRemote:FireClient(Player)
+		Player.CameraMode = Enum.CameraMode.Classic
+		if WeaponsInfoForPlayer[Player] and WeaponsInfoForPlayer[Player][Weapon.Name] then
+			WeaponsInfoForPlayer[Player][Weapon.Name]["Reloading"] = false
+		end
+		local ReloadSFX = Weapon:WaitForChild("Main"):WaitForChild("Reloading")
+		ReloadSFX:Stop()
+		WeaponsInfoForPlayer[Player]["CurrentWeapon"] = nil
+		Player = nil
+		Character = nil
+	end)
+end
+function WeaponsSystem.HandleReloadingRemotes()--when a player on pc presses R,on mobile clicks a button made by ContextActionService
+	ReloadingRemote.OnServerEvent:Connect(function(Player)
+		if not Player.Character
+			or not Player.Character:FindFirstChild("HumanoidRootPart")
+			or WeaponsInfoForPlayer[Player]["CurrentWeapon"] == nil
+			or Player.Character:FindFirstChild("Humanoid").Health == 0  then
+			return nil end
+		WeaponsSystem.Reload(Player,WeaponsInfoForPlayer[Player]["CurrentWeapon"])
+	end)
+end
+WeaponsSystem.HandleReloadingRemotes()
+local CollectionService = game:GetService("CollectionService")
+local ServerStorage = game:GetService("ServerStorage")
+for _,Weapon in pairs(CollectionService:GetTagged("Weapon")) do
+	WeaponsSystem.Weaponize(Weapon)
+end
+Players.PlayerAdded:Connect(function(Player)
+	WeaponsSystem.AddPlayer(Player)
+end)
+Players.PlayerRemoving:Connect(function(Player)
+	WeaponsSystem.RemovePlayer(Player)
+end)
+CollectionService:GetInstanceAddedSignal("Weapon"):Connect(function(Instance)
+	WeaponsSystem.Weaponize(Instance)
+end)
